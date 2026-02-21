@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>听音辨蝉 - 真实采样版</title>
+    <style>
+        body { margin: 0; background: #000; color: #1a4d1a; font-family: 'Courier New', Courier, monospace; overflow: hidden; display: flex; justify-content: center; align-items: center; height: 100vh; cursor: crosshair; }
+        #info { position: absolute; top: 30px; text-align: center; pointer-events: none; width: 100%; }
+        #msg { font-size: 20px; color: #3e8e3e; letter-spacing: 2px; }
+        #loader { color: #888; font-size: 14px; }
+        .stats { margin-top: 10px; font-weight: bold; }
+        /* 简单的视觉反馈：抓捕时的微光 */
+        #flash { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: white; opacity: 0; pointer-events: none; transition: opacity 0.1s; }
+    </style>
+</head>
+<body>
+
+<div id="flash"></div>
+<div id="info">
+    <div id="loader">正在加载森林气息...</div>
+    <div id="msg" style="display:none;">[ 点击屏幕踏入森林 ]</div>
+    <div id="stats" style="display:none;" class="stats">
+        深度: <span id="lvl">1</span> | 标本: <span id="score">0</span>/3
+    </div>
+</div>
+
+<script>
+/**
+ * 真实音频采样版逻辑
+ */
+let audioCtx;
+let forestBuffer, cicadaBuffer;
+let bgNode, cicadaNode, panner, gainNode;
+let isPlaying = false;
+let level = 1;
+let caughtInLevel = 0;
+let cicadaPos = { x: 5, z: 0 }; 
+let listenerAngle = 0;
+
+// 在线音频素材（如果链接失效，请替换为本地文件）
+const BG_URL = 'https://actions.google.com/sounds/v1/ambiences/forest_night_with_crickets.ogg';
+const CICADA_URL = 'https://actions.google.com/sounds/v1/animals/cricket_chirp.ogg'; // 临时用蟋蟀替代蝉，真实场景建议换成蝉
+
+async function loadSounds() {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    
+    // 并行加载音频
+    const [bgRes, cicadaRes] = await Promise.all([
+        fetch(BG_URL).then(r => r.arrayBuffer()),
+        fetch(CICADA_URL).then(r => r.arrayBuffer())
+    ]);
+
+    forestBuffer = await audioCtx.decodeAudioData(bgRes);
+    cicadaBuffer = await audioCtx.decodeAudioData(cicadaRes);
+
+    document.getElementById('loader').style.display = 'none';
+    document.getElementById('msg').style.display = 'block';
+}
+
+function initGame() {
+    if (isPlaying) return;
+    isPlaying = true;
+    
+    document.getElementById('msg').innerHTML = "闭上眼，仔细听...";
+    document.getElementById('stats').style.display = 'block';
+
+    // 1. 播放背景森林音 (循环)
+    bgNode = audioCtx.createBufferSource();
+    bgNode.buffer = forestBuffer;
+    bgNode.loop = true;
+    let bgGain = audioCtx.createGain();
+    bgGain.gain.value = 0.3; // 背景音不要太大
+    bgNode.connect(bgGain).connect(audioCtx.destination);
+    bgNode.start();
+
+    // 2. 初始化空间音效节点
+    panner = audioCtx.createPanner();
+    panner.panningModel = 'HRTF';
+    gainNode = audioCtx.createGain();
+    
+    panner.connect(gainNode).connect(audioCtx.destination);
+
+    spawnCicada();
+}
+
+function spawnCicada() {
+    if(cicadaNode) try { cicadaNode.stop(); } catch(e){}
+
+    // 创建新的音频源
+    cicadaNode = audioCtx.createBufferSource();
+    cicadaNode.buffer = cicadaBuffer;
+    cicadaNode.loop = true;
+
+    // 随机位置
+    const angle = Math.random() * Math.PI * 2;
+    cicadaPos.x = Math.sin(angle) * 5;
+    cicadaPos.z = Math.cos(angle) * 5;
+
+    // 难度递增：音量随关卡减小
+    let vol = Math.max(0.05, 1.0 - (level * 0.15));
+    gainNode.gain.setTargetAtTime(vol, audioCtx.currentTime, 0.1);
+
+    cicadaNode.connect(panner);
+    cicadaNode.start();
+    updatePanner();
+}
+
+function updatePanner() {
+    if (!panner) return;
+    // 计算相对位置（模拟转头）
+    const rx = cicadaPos.x * Math.cos(listenerAngle) - cicadaPos.z * Math.sin(listenerAngle);
+    const rz = cicadaPos.x * Math.sin(listenerAngle) + cicadaPos.z * Math.cos(listenerAngle);
+    
+    panner.positionX.setTargetAtTime(rx, audioCtx.currentTime, 0.1);
+    panner.positionZ.setTargetAtTime(rz, audioCtx.currentTime, 0.1);
+}
+
+window.addEventListener('mousemove', (e) => {
+    if (!isPlaying) return;
+    listenerAngle = ((e.clientX / window.innerWidth) - 0.5) * Math.PI * 2;
+    updatePanner();
+});
+
+window.addEventListener('mousedown', () => {
+    if (!audioCtx) { loadSounds(); return; }
+    if (!isPlaying) { initGame(); return; }
+
+    const rx = cicadaPos.x * Math.cos(listenerAngle) - cicadaPos.z * Math.sin(listenerAngle);
+    const rz = cicadaPos.x * Math.sin(listenerAngle) + cicadaPos.z * Math.cos(listenerAngle);
+
+    // 判定：rz < 0 表示在前方，Math.abs(rx) < 1 表示在正中央附近
+    if (rz < -2 && Math.abs(rx) < 1.2) {
+        catchCicada();
+    } else {
+        document.getElementById('msg').innerHTML = "它跳走了...";
+        spawnCicada(); // 没抓到也会变动位置，增加挑战
+    }
+});
+
+function catchCicada() {
+    caughtInLevel++;
+    document.getElementById('score').innerText = caughtInLevel;
+    document.getElementById('msg').innerHTML = "抓捕成功！";
+    
+    // 视觉反馈
+    const flash = document.getElementById('flash');
+    flash.style.opacity = '0.2';
+    setTimeout(() => flash.style.opacity = '0', 100);
+
+    if (caughtInLevel >= 3) {
+        level++;
+        caughtInLevel = 0;
+        document.getElementById('lvl').innerText = level;
+        document.getElementById('msg').innerHTML = "向森林更深处走去...";
+        setTimeout(spawnCicada, 1500);
+    } else {
+        setTimeout(spawnCicada, 800);
+    }
+}
+
+// 自动加载音频
+window.onload = loadSounds;
+</script>
+</body>
+</html>
