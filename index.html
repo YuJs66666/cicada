@@ -38,8 +38,8 @@ let cicadaPos = { x: 5, z: 0 };
 let listenerAngle = 0;
 
 // 在线音频素材（如果链接失效，请替换为本地文件）
-const BG_URL = 'https://actions.google.com/sounds/v1/ambiences/forest_night_with_crickets.ogg';
-const CICADA_URL = 'https://actions.google.com/sounds/v1/animals/cricket_chirp.ogg'; // 临时用蟋蟀替代蝉，真实场景建议换成蝉
+const BG_URL = 'bg.mp3';      // 背景森林音的文件名
+const CICADA_URL = 'cicada.mp3'; // 蝉鸣声的文件名 // 临时用蟋蟀替代蝉，真实场景建议换成蝉
 
 async function loadSounds() {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -162,4 +162,5 @@ function catchCicada() {
 window.onload = loadSounds;
 </script>
 </body>
+
 </html>
