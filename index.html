@@ -2,122 +2,153 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <title>听音辨蝉 - 真实采样版</title>
+    <title>暗夜猎手：蝉 - 沉浸进化版</title>
     <style>
-        body { margin: 0; background: #000; color: #1a4d1a; font-family: 'Courier New', Courier, monospace; overflow: hidden; display: flex; justify-content: center; align-items: center; height: 100vh; cursor: crosshair; }
-        #info { position: absolute; top: 30px; text-align: center; pointer-events: none; width: 100%; }
-        #msg { font-size: 20px; color: #3e8e3e; letter-spacing: 2px; }
-        #loader { color: #888; font-size: 14px; }
-        .stats { margin-top: 10px; font-weight: bold; }
-        /* 简单的视觉反馈：抓捕时的微光 */
-        #flash { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: white; opacity: 0; pointer-events: none; transition: opacity 0.1s; }
+        body { margin: 0; background: #000; color: #1a4d1a; font-family: 'STHeiti', 'Microsoft YaHei', sans-serif; overflow: hidden; height: 100vh; cursor: none; }
+        #info { position: absolute; top: 30px; text-align: center; pointer-events: none; width: 100%; z-index: 10; }
+        #msg { font-size: 22px; color: #4a934a; letter-spacing: 4px; transition: all 0.5s; text-shadow: 0 0 8px #000; }
+        #loader { color: #555; font-size: 14px; }
+        .stats { margin-top: 15px; font-size: 14px; color: #2d5a2d; opacity: 0.7; }
+        canvas { display: block; }
     </style>
 </head>
 <body>
 
-<div id="flash"></div>
 <div id="info">
-    <div id="loader">正在加载森林气息...</div>
-    <div id="msg" style="display:none;">[ 点击屏幕踏入森林 ]</div>
+    <div id="loader">正在感知森林的呼吸...</div>
+    <div id="msg" style="display:none;">[ 点击屏幕 屏息凝神 ]</div>
     <div id="stats" style="display:none;" class="stats">
-        深度: <span id="lvl">1</span> | 标本: <span id="score">0</span>/3
+        深处: <span id="lvl">1</span> 层 | 标本: <span id="score">0</span>/3
     </div>
 </div>
+<canvas id="gameCanvas"></canvas>
 
 <script>
 /**
- * 真实音频采样版逻辑
+ * 暗夜猎手 - 核心逻辑说明：
+ * 1. 声音：使用 HRTF 模拟空间定位
+ * 2. 视觉：Canvas 绘制微弱手电光晕
+ * 3. 机制：未击中触发“惊飞”逻辑
  */
-let audioCtx;
-let forestBuffer, cicadaBuffer;
-let bgNode, cicadaNode, panner, gainNode;
-let isPlaying = false;
-let level = 1;
-let caughtInLevel = 0;
-let cicadaPos = { x: 5, z: 0 }; 
-let listenerAngle = 0;
 
-// 在线音频素材（如果链接失效，请替换为本地文件）
-const BG_URL = 'bg.mp3';      // 背景森林音的文件名
-const CICADA_URL = 'cicada.mp3'; // 蝉鸣声的文件名 // 临时用蟋蟀替代蝉，真实场景建议换成蝉
+let audioCtx, forestBuffer, cicadaBuffer;
+let bgNode, cicadaNode, panner, cicadaGain;
+let isPlaying = false, level = 1, caughtInLevel = 0;
+let cicadaPos = { x: 5, z: 0 }; 
+let listenerAngle = 0, mouseX = 0, mouseY = 0;
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+// --- 配置区：请确保文件名正确 ---
+const BG_URL = 'bg.mp3';      
+const CICADA_URL = 'cicada.mp3'; 
+
+// 初始化画布
+function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resize);
+resize();
 
 async function loadSounds() {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const loader = document.getElementById('loader');
     
-    // 并行加载音频
-    const [bgRes, cicadaRes] = await Promise.all([
-        fetch(BG_URL).then(r => r.arrayBuffer()),
-        fetch(CICADA_URL).then(r => r.arrayBuffer())
-    ]);
+    try {
+        const [bgRes, cicadaRes] = await Promise.all([
+            fetch(BG_URL).then(r => { if(!r.ok) throw new Error(); return r.arrayBuffer(); }),
+            fetch(CICADA_URL).then(r => { if(!r.ok) throw new Error(); return r.arrayBuffer(); })
+        ]);
 
-    forestBuffer = await audioCtx.decodeAudioData(bgRes);
-    cicadaBuffer = await audioCtx.decodeAudioData(cicadaRes);
+        forestBuffer = await audioCtx.decodeAudioData(bgRes);
+        cicadaBuffer = await audioCtx.decodeAudioData(cicadaRes);
 
-    document.getElementById('loader').style.display = 'none';
-    document.getElementById('msg').style.display = 'block';
+        loader.style.display = 'none';
+        document.getElementById('msg').style.display = 'block';
+    } catch (e) {
+        loader.innerHTML = "<span style='color:red;'>加载失败</span><br>确保 bg.mp3 和 cicada.mp3 在同一目录下";
+    }
 }
 
 function initGame() {
     if (isPlaying) return;
     isPlaying = true;
-    
-    document.getElementById('msg').innerHTML = "闭上眼，仔细听...";
+    document.getElementById('msg').innerHTML = "仔细听... 它在某个方位";
     document.getElementById('stats').style.display = 'block';
 
-    // 1. 播放背景森林音 (循环)
+    // 播放背景音
     bgNode = audioCtx.createBufferSource();
     bgNode.buffer = forestBuffer;
     bgNode.loop = true;
     let bgGain = audioCtx.createGain();
-    bgGain.gain.value = 0.3; // 背景音不要太大
+    bgGain.gain.value = 0.2;
     bgNode.connect(bgGain).connect(audioCtx.destination);
     bgNode.start();
 
-    // 2. 初始化空间音效节点
+    // 初始化空间音效
     panner = audioCtx.createPanner();
-    panner.panningModel = 'HRTF';
-    gainNode = audioCtx.createGain();
-    
-    panner.connect(gainNode).connect(audioCtx.destination);
+    panner.panningModel = 'HRTF'; // 关键：开启 3D 定位
+    cicadaGain = audioCtx.createGain();
+    panner.connect(cicadaGain).connect(audioCtx.destination);
 
     spawnCicada();
+    requestAnimationFrame(gameLoop);
 }
 
 function spawnCicada() {
     if(cicadaNode) try { cicadaNode.stop(); } catch(e){}
-
-    // 创建新的音频源
+    
     cicadaNode = audioCtx.createBufferSource();
     cicadaNode.buffer = cicadaBuffer;
     cicadaNode.loop = true;
 
-    // 随机位置
+    // 随机一个 360 度的位置
     const angle = Math.random() * Math.PI * 2;
     cicadaPos.x = Math.sin(angle) * 5;
     cicadaPos.z = Math.cos(angle) * 5;
 
-    // 难度递增：音量随关卡减小
-    let vol = Math.max(0.05, 1.0 - (level * 0.15));
-    gainNode.gain.setTargetAtTime(vol, audioCtx.currentTime, 0.1);
+    // 难度：关卡越高，音量越低
+    let vol = Math.max(0.05, 0.8 - (level * 0.12));
+    cicadaGain.gain.setTargetAtTime(vol, audioCtx.currentTime, 0.1);
 
     cicadaNode.connect(panner);
     cicadaNode.start();
-    updatePanner();
 }
 
 function updatePanner() {
     if (!panner) return;
-    // 计算相对位置（模拟转头）
+    // 模拟转头：将物体坐标系旋转
     const rx = cicadaPos.x * Math.cos(listenerAngle) - cicadaPos.z * Math.sin(listenerAngle);
     const rz = cicadaPos.x * Math.sin(listenerAngle) + cicadaPos.z * Math.cos(listenerAngle);
     
-    panner.positionX.setTargetAtTime(rx, audioCtx.currentTime, 0.1);
-    panner.positionZ.setTargetAtTime(rz, audioCtx.currentTime, 0.1);
+    panner.positionX.setTargetAtTime(rx, audioCtx.currentTime, 0.05);
+    panner.positionZ.setTargetAtTime(rz, audioCtx.currentTime, 0.05);
+}
+
+// 核心逻辑：没抓到时触发“惊飞”
+function handleMiss() {
+    document.getElementById('msg').innerHTML = "！！它惊飞了！！";
+    
+    // 模拟声音快速划过并消失
+    const startTime = audioCtx.currentTime;
+    panner.positionX.linearRampToValueAtTime(30, startTime + 0.8);
+    panner.positionZ.linearRampToValueAtTime(-30, startTime + 0.8);
+    cicadaGain.gain.linearRampToValueAtTime(0, startTime + 0.8);
+
+    setTimeout(() => {
+        document.getElementById('msg').innerHTML = "重新寻找它的声音...";
+        spawnCicada();
+    }, 1200);
 }
 
 window.addEventListener('mousemove', (e) => {
+    mouseX = e.clientX;
+    mouseY = e.clientY;
     if (!isPlaying) return;
-    listenerAngle = ((e.clientX / window.innerWidth) - 0.5) * Math.PI * 2;
+    // 鼠标水平位移对应视角 360 度
+    listenerAngle = ((mouseX / canvas.width) - 0.5) * Math.PI * 2;
     updatePanner();
 });
 
@@ -128,39 +159,64 @@ window.addEventListener('mousedown', () => {
     const rx = cicadaPos.x * Math.cos(listenerAngle) - cicadaPos.z * Math.sin(listenerAngle);
     const rz = cicadaPos.x * Math.sin(listenerAngle) + cicadaPos.z * Math.cos(listenerAngle);
 
-    // 判定：rz < 0 表示在前方，Math.abs(rx) < 1 表示在正中央附近
-    if (rz < -2 && Math.abs(rx) < 1.2) {
-        catchCicada();
+    // 判定区域：正前方且居中
+    if (rz < -3.5 && Math.abs(rx) < 1.0) {
+        catchSuccess();
     } else {
-        document.getElementById('msg').innerHTML = "它跳走了...";
-        spawnCicada(); // 没抓到也会变动位置，增加挑战
+        handleMiss();
     }
 });
 
-function catchCicada() {
+function catchSuccess() {
     caughtInLevel++;
     document.getElementById('score').innerText = caughtInLevel;
-    document.getElementById('msg').innerHTML = "抓捕成功！";
+    document.getElementById('msg').innerHTML = "精准捕获！";
     
-    // 视觉反馈
-    const flash = document.getElementById('flash');
-    flash.style.opacity = '0.2';
-    setTimeout(() => flash.style.opacity = '0', 100);
+    // 闪光视觉反馈
+    flashOpacity = 0.4;
 
     if (caughtInLevel >= 3) {
         level++;
         caughtInLevel = 0;
         document.getElementById('lvl').innerText = level;
-        document.getElementById('msg').innerHTML = "向森林更深处走去...";
-        setTimeout(spawnCicada, 1500);
+        document.getElementById('msg').innerHTML = "你正向森林深处走去...";
+        setTimeout(spawnCicada, 2000);
     } else {
-        setTimeout(spawnCicada, 800);
+        setTimeout(spawnCicada, 1000);
     }
 }
 
-// 自动加载音频
+let flashOpacity = 0;
+function gameLoop() {
+    ctx.fillStyle = "black";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // 绘制手电筒微光
+    let grad = ctx.createRadialGradient(mouseX, mouseY, 5, mouseX, mouseY, 200);
+    grad.addColorStop(0, "rgba(30, 60, 30, 0.2)");
+    grad.addColorStop(1, "transparent");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // 绘制准星（极淡）
+    ctx.strokeStyle = "rgba(74, 147, 74, 0.15)";
+    ctx.beginPath();
+    ctx.arc(canvas.width/2, canvas.height/2, 25, 0, Math.PI*2);
+    ctx.moveTo(canvas.width/2, canvas.height/2 - 10);
+    ctx.lineTo(canvas.width/2, canvas.height/2 + 10);
+    ctx.stroke();
+
+    // 抓到时的闪光处理
+    if (flashOpacity > 0) {
+        ctx.fillStyle = `rgba(255, 255, 255, ${flashOpacity})`;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        flashOpacity -= 0.02;
+    }
+
+    requestAnimationFrame(gameLoop);
+}
+
 window.onload = loadSounds;
 </script>
 </body>
-
 </html>
