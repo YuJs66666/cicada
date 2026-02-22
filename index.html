@@ -2,32 +2,38 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <title>暗夜猎手：深林沉浸版</title>
+    <title>暗夜猎手：360°无限深林</title>
     <style>
         body { margin: 0; background: #000; color: #6aff6a; font-family: sans-serif; overflow: hidden; height: 100vh; cursor: crosshair; }
         
-        /* 动态背景层 */
-        #bg-container {
+        /* 循环背景容器 */
+        #bg-wrapper {
             position: absolute;
             top: 0;
-            left: -10%; /* 预留左右移动空间 */
-            width: 120%; 
+            left: 0;
+            width: 100%;
             height: 100%;
-            background: url('forest.jpg') center/cover;
-            filter: brightness(0.8) contrast(0.9) blur(1px); /* 极暗处理 */
-            transition: transform 0.1s ease-out;
             z-index: 1;
+            pointer-events: none;
         }
 
-        /* 环境遮罩：中间亮四周暗 */
-    #vignette {
-    position: absolute;
-    inset: 0;
-    /* 将最后的 0.95 改为 0.5，这样四周就不会黑得那么生硬 */
-    background: radial-gradient(circle at center, transparent 30%, rgba(0,0,0,0.5) 90%);
-    z-index: 2;
-    pointer-events: none;
-}
+        .bg-part {
+            position: absolute;
+            top: 0;
+            width: 200%; /* 图片需要足够宽以覆盖视野 */
+            height: 100%;
+            /* 请替换为你下载的图片 */
+            background: url('forest.jpg') center/cover;
+            filter: brightness(0.65) contrast(0.9) blur(2px);
+        }
+
+        #vignette {
+            position: absolute;
+            inset: 0;
+            background: radial-gradient(circle at center, transparent 30%, rgba(0,0,0,0.6) 90%);
+            z-index: 2;
+            pointer-events: none;
+        }
 
         #ui { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center; align-items: center; pointer-events: none; z-index: 10; }
         #msg { font-size: 24px; letter-spacing: 4px; text-shadow: 0 0 15px #000; }
@@ -38,31 +44,35 @@
 </head>
 <body>
 
-<div id="bg-container"></div>
+<div id="bg-wrapper">
+    <div id="bg1" class="bg-part"></div>
+    <div id="bg2" class="bg-part"></div>
+</div>
 <div id="vignette"></div>
 
 <div id="ui">
-    <div id="msg">正在感知森林波形...</div>
-    <div id="btn-start">踏入深林</div>
+    <div id="msg">正在同步时空维度...</div>
+    <div id="btn-start">进入 360° 深林</div>
     <div id="stats-panel" class="stats" style="display:none;">
-        探索深度: <span id="lvl">1</span> | 捕获: <span id="score">0</span> / 3
+        Level: <span id="lvl">1</span> | Caught: <span id="score">0</span> / 3
     </div>
 </div>
 <canvas id="gameCanvas"></canvas>
 
 <script>
-/**
- * 视觉沉浸版 - 增加了视差背景和动态反馈
- */
 const state = {
     audio: null, panner: null, gain: null, bgBuffer: null, targetBuffer: null,
-    isPlaying: false, level: 1, score: 0, playerAngle: 0, cicadaAngle: 0,
-    mouseX: 0, mouseY: 0, flash: 0, source: null
+    isPlaying: false, level: 1, score: 0, 
+    playerAngle: 0, // 核心：连续的角度值
+    cicadaAngle: 0,
+    mouseX: 0, mouseY: 0, flash: 0, source: null,
+    bgWidth: 0
 };
 
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
-const bgContainer = document.getElementById('bg-container');
+const bg1 = document.getElementById('bg1');
+const bg2 = document.getElementById('bg2');
 const btnStart = document.getElementById('btn-start');
 
 async function load() {
@@ -75,11 +85,19 @@ async function load() {
         ]);
         state.bgBuffer = await state.audio.decodeAudioData(bgRes);
         state.targetBuffer = await state.audio.decodeAudioData(targetRes);
-        document.getElementById('msg').innerText = "森林已在耳边复苏";
+        document.getElementById('msg').innerText = "360度感知已就绪";
         btnStart.style.display = "block";
     } catch (e) {
-        document.getElementById('msg').innerText = "资源加载失败 (请检查 mp3 文件)";
+        document.getElementById('msg').innerText = "加载失败";
     }
+}
+
+function updateSpace() {
+    if (!state.panner) return;
+    // 即使玩家转了 100 圈，我们通过余弦正弦依然能得到正确的 3D 方位
+    const diff = state.cicadaAngle - state.playerAngle;
+    state.panner.positionX.setTargetAtTime(Math.sin(diff) * 5, state.audio.currentTime, 0.05);
+    state.panner.positionZ.setTargetAtTime(-Math.cos(diff) * 5, state.audio.currentTime, 0.05);
 }
 
 function spawn() {
@@ -87,6 +105,7 @@ function spawn() {
     state.source = state.audio.createBufferSource();
     state.source.buffer = state.targetBuffer;
     state.source.loop = true;
+    // 蝉的绝对角度（保持在 0 - 2PI）
     state.cicadaAngle = Math.random() * Math.PI * 2;
     let vol = Math.max(0.05, 0.7 - (state.level * 0.1));
     state.gain.gain.setTargetAtTime(vol, state.audio.currentTime, 0.1);
@@ -95,54 +114,30 @@ function spawn() {
     updateSpace();
 }
 
-function updateSpace() {
-    if (!state.panner) return;
-    const diff = state.cicadaAngle - state.playerAngle;
-    state.panner.positionX.setTargetAtTime(Math.sin(diff) * 5, state.audio.currentTime, 0.05);
-    state.panner.positionZ.setTargetAtTime(-Math.cos(diff) * 5, state.audio.currentTime, 0.05);
-}
-
-function initGame() {
-    state.audio.resume();
-    state.isPlaying = true;
-    btnStart.style.display = "none";
-    document.getElementById('stats-panel').style.display = "block";
-    document.getElementById('msg').innerText = "闭上眼... 或者看那黑暗的深处";
-
-    const bgSource = state.audio.createBufferSource();
-    bgSource.buffer = state.bgBuffer;
-    bgSource.loop = true;
-    const bgG = state.audio.createGain();
-    bgG.gain.value = 0.15;
-    bgSource.connect(bgG).connect(state.audio.destination);
-    bgSource.start();
-
-    state.panner = state.audio.createPanner();
-    state.panner.panningModel = 'HRTF';
-    state.gain = state.audio.createGain();
-    state.panner.connect(state.gain).connect(state.audio.destination);
-
-    spawn();
-    requestAnimationFrame(render);
-}
-
 window.addEventListener('mousemove', (e) => {
     state.mouseX = e.clientX;
     state.mouseY = e.clientY;
     
-    // 背景视差移动：鼠标在右，背景稍微往左走
-    const moveX = (e.clientX / window.innerWidth - 0.5) * 50; 
-    bgContainer.style.transform = `translateX(${-moveX}px) scale(1.1)`;
+    // 核心修改：鼠标位置决定视角增量，而非固定角度
+    // 当鼠标在屏幕右侧，视角向右增加；反之减少
+    const speed = (e.clientX / window.innerWidth - 0.5) * 0.05;
+    state.playerAngle += speed;
 
-    if (state.isPlaying) {
-        state.playerAngle = (e.clientX / window.innerWidth - 0.5) * Math.PI * 2;
-        updateSpace();
-    }
+    // 背景循环逻辑计算
+    const bgPos = -(state.playerAngle / (Math.PI * 2)) * 100; // 将弧度转为百分比
+    const movePercent = bgPos % 100;
+    
+    // 两张背景图无缝衔接
+    bg1.style.transform = `translateX(${movePercent}%)`;
+    bg2.style.transform = `translateX(${movePercent + (movePercent > 0 ? -100 : 100)}%)`;
+
+    if (state.isPlaying) updateSpace();
 });
 
 window.addEventListener('mousedown', () => {
     if (!state.isPlaying) return;
     const rawDiff = state.cicadaAngle - state.playerAngle;
+    // 使用 Math.atan2 寻找最短转头路径
     const normalizedDiff = Math.atan2(Math.sin(rawDiff), Math.cos(rawDiff));
 
     if (Math.abs(normalizedDiff) < 0.25) {
@@ -152,9 +147,9 @@ window.addEventListener('mousedown', () => {
         if (state.score >= 3) {
             state.level++; state.score = 0;
             document.getElementById('lvl').innerText = state.level;
-            document.getElementById('msg').innerText = "森林正在吞噬你...";
+            document.getElementById('msg').innerText = "你已迷失在森林深处...";
         } else {
-            document.getElementById('msg').innerText = "精准捕获！";
+            document.getElementById('msg').innerText = "捕获成功！";
         }
         spawn();
     } else {
@@ -164,37 +159,48 @@ window.addEventListener('mousedown', () => {
     }
 });
 
-btnStart.addEventListener('click', initGame);
+btnStart.addEventListener('click', () => {
+    state.audio.resume();
+    state.isPlaying = true;
+    btnStart.style.display = "none";
+    document.getElementById('stats-panel').style.display = "block";
+    document.getElementById('msg').innerText = "转动身体，寻找声音...";
+
+    const bgS = state.audio.createBufferSource();
+    bgS.buffer = state.bgBuffer; bgS.loop = true;
+    const g = state.audio.createGain(); g.gain.value = 0.15;
+    bgS.connect(g).connect(state.audio.destination);
+    bgS.start();
+
+    state.panner = state.audio.createPanner();
+    state.panner.panningModel = 'HRTF';
+    state.gain = state.audio.createGain();
+    state.panner.connect(state.gain).connect(state.audio.destination);
+    
+    spawn();
+    requestAnimationFrame(render);
+});
 
 function render() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    // 手电筒中心光（随鼠标移动）
-    let g = ctx.createRadialGradient(state.mouseX, state.mouseY, 0, state.mouseX, state.mouseY, 150);
-    g.addColorStop(0, "rgba(100,255,100,0.08)");
+    let g = ctx.createRadialGradient(state.mouseX, state.mouseY, 0, state.mouseX, state.mouseY, 200);
+    g.addColorStop(0, "rgba(150,255,150,0.15)");
     g.addColorStop(1, "transparent");
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // 成功时的闪光效果
     if (state.flash > 0) {
         ctx.fillStyle = `rgba(255,255,255,${state.flash})`;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
-        state.flash -= 0.04;
-        bgContainer.style.filter = `brightness(${0.8 + state.flash}) contrast(0.9)`;
-    } else {
-        bgContainer.style.filter = `brightness(0.8) contrast(0.9) blur(1px)`;
+        state.flash -= 0.05;
     }
-
     requestAnimationFrame(render);
 }
 
 window.addEventListener('resize', () => {
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
+    canvas.width = window.innerWidth; canvas.height = window.innerHeight;
 });
 window.dispatchEvent(new Event('resize'));
-
 load();
 </script>
 </body>
