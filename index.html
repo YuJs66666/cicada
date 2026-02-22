@@ -2,19 +2,25 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <title>暗夜猎手：全空间 3D 版</title>
+    <title>暗夜猎手：全维度自定义版</title>
     <style>
         body { margin: 0; background: #000; color: #6aff6a; font-family: sans-serif; overflow: hidden; height: 100vh; cursor: crosshair; }
+        
+        /* 核心：加载你自己的图片 forest.jpg */
         #bg-layer {
             position: absolute;
-            inset: -10% -20%; /* 扩大范围以支持上下移动 */
-            background: url('https://images.unsplash.com/photo-1511497584788-8767fe771d21?q=80&w=2000');
+            /* 预留出上下移动的缓冲空间 */
+            top: -10%; left: -10%; width: 120%; height: 120%;
+            background: url('forest.jpg'); 
             background-repeat: repeat-x;
-            background-size: auto 120%; /* 纵向拉伸一点以便上下滑动 */
+            background-size: auto 100%;
             background-position: 0 50%;
-            filter: brightness(0.55) contrast(0.9) blur(2px);
+            /* 亮度设为 0.6，既能看清树木又有朦胧感 */
+            filter: brightness(0.6) contrast(0.9) blur(1px);
             z-index: 1;
+            will-change: background-position;
         }
+
         #vignette {
             position: absolute;
             inset: 0;
@@ -22,10 +28,11 @@
             z-index: 2;
             pointer-events: none;
         }
+
         #ui { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center; align-items: center; pointer-events: none; z-index: 10; }
-        #msg { font-size: 22px; letter-spacing: 4px; text-shadow: 0 0 15px #000; text-align: center; }
-        #btn-start { pointer-events: auto; cursor: pointer; border: 1px solid #1a4d1a; padding: 15px 30px; background: rgba(0,40,0,0.8); color: #6aff6a; margin-top: 20px; display: none; }
-        .stats { position: absolute; bottom: 30px; font-size: 14px; opacity: 0.6; }
+        #msg { font-size: 22px; letter-spacing: 4px; text-shadow: 0 0 15px #000; text-align: center; white-space: pre-line; }
+        #btn-start { pointer-events: auto; cursor: pointer; border: 1px solid #1a4d1a; padding: 15px 30px; background: rgba(0,40,0,0.8); color: #6aff6a; margin-top: 20px; display: none; font-size: 18px; }
+        .stats { position: absolute; bottom: 30px; font-size: 14px; opacity: 0.8; }
         canvas { display: block; position: absolute; top: 0; left: 0; z-index: 5; }
     </style>
 </head>
@@ -35,8 +42,8 @@
 <div id="vignette"></div>
 
 <div id="ui">
-    <div id="msg">正在感知全维度空间...</div>
-    <div id="btn-start">开始全空间狩猎</div>
+    <div id="msg">正在加载你上传的森林资源...</div>
+    <div id="btn-start">踏入深林</div>
     <div id="stats-panel" class="stats" style="display:none;">
         探索深度: <span id="lvl">1</span> | 捕获: <span id="score">0</span> / 3
     </div>
@@ -44,18 +51,21 @@
 <canvas id="gameCanvas"></canvas>
 
 <script>
+/**
+ * 3D 全维度自定义资源版
+ */
 const CONFIG = {
-    SENSITIVITY_X: 0.01,
-    DEADZONE: 0.1,
-    VERTICAL_LIMIT: 0.8  // 仰角限制
+    SENSITIVITY_X: 0.015, // 降低了灵敏度，转头更稳
+    DEADZONE: 0.1,        // 中心死区
+    VERTICAL_LIMIT: 0.6,  // 仰角限制
+    BG_X_SPEED: 1500      // 背景水平滚动速度
 };
 
 const state = {
     audio: null, panner: null, gain: null, bgBuffer: null, targetBuffer: null,
     isPlaying: false, level: 1, score: 0,
-    heading: 0,    // 水平朝向
-    pitch: 0,      // 垂直朝向 (抬头/低头)
-    cicadaPos: { x: 0, y: 0, z: 0 }, // 蝉的三维位置
+    heading: 0, pitch: 0,
+    cicadaPos: { x: 0, y: 0, z: 0 },
     mouseX: 0, mouseY: 0, flash: 0, source: null,
     bgOffset: { x: 0, y: 50 }
 };
@@ -65,164 +75,23 @@ const ctx = canvas.getContext('2d');
 const bgLayer = document.getElementById('bg-layer');
 const btnStart = document.getElementById('btn-start');
 
+// 1. 加载你自己的音频文件
 async function load() {
     try {
         const AudioContext = window.AudioContext || window.webkitAudioContext;
         state.audio = new AudioContext();
+        
+        // 分别加载 bg.mp3 和 cicada.mp3
         const [bgRes, targetRes] = await Promise.all([
-            fetch('bg.mp3').then(r => r.arrayBuffer()),
-            fetch('cicada.mp3').then(r => r.arrayBuffer())
+            fetch('bg.mp3').then(r => { if(!r.ok) throw new Error('找不到 bg.mp3'); return r.arrayBuffer(); }),
+            fetch('cicada.mp3').then(r => { if(!r.ok) throw new Error('找不到 cicada.mp3'); return r.arrayBuffer(); })
         ]);
+
         state.bgBuffer = await state.audio.decodeAudioData(bgRes);
         state.targetBuffer = await state.audio.decodeAudioData(targetRes);
-        document.getElementById('msg').innerText = "全空间感知就绪\n蝉可能在树梢，也可能在草丛";
+
+        document.getElementById('msg').innerText = "资源已就绪\n请戴上耳机，寻找蝉鸣的方位";
         btnStart.style.display = "block";
-    } catch (e) {
-        document.getElementById('msg').innerText = "加载失败";
-    }
-}
 
-function updateAudioSpace() {
-    if (!state.panner) return;
-    
-    // 计算蝉相对于玩家的 3D 偏移
-    // 我们保持蝉在绝对坐标系中的位置，根据玩家的 heading(水平) 和 pitch(垂直) 旋转坐标轴
-    const relX = state.cicadaPos.x - 0; // 玩家始终在原点
-    const relY = state.cicadaPos.y - 0;
-    const relZ = state.cicadaPos.z - 0;
-
-    // 水平旋转 (Heading)
-    const hCos = Math.cos(-state.heading);
-    const hSin = Math.sin(-state.heading);
-    let x = relX * hCos - relZ * hSin;
-    let z = relX * hSin + relZ * hCos;
-
-    // 垂直旋转 (Pitch)
-    const pCos = Math.cos(-state.pitch);
-    const pSin = Math.sin(-state.pitch);
-    let y = relY * pCos - z * pSin;
-    z = relY * pSin + z * pCos;
-
-    state.panner.positionX.setTargetAtTime(x, state.audio.currentTime, 0.1);
-    state.panner.positionY.setTargetAtTime(y, state.audio.currentTime, 0.1);
-    state.panner.positionZ.setTargetAtTime(z, state.audio.currentTime, 0.1);
-}
-
-function spawn() {
-    if (state.source) state.source.stop();
-    state.source = state.audio.createBufferSource();
-    state.source.buffer = state.targetBuffer;
-    state.source.loop = true;
-
-    // 随机分配蝉的三维位置
-    const angle = Math.random() * Math.PI * 2;
-    const dist = 5;
-    state.cicadaPos.x = Math.sin(angle) * dist;
-    state.cicadaPos.z = Math.cos(angle) * dist;
-    state.cicadaPos.y = (Math.random() - 0.5) * 8; // 高度在 -4 到 +4 之间随机
-
-    let vol = Math.max(0.04, 0.6 - (state.level * 0.08));
-    state.gain.gain.setTargetAtTime(vol, state.audio.currentTime, 0.1);
-    state.source.connect(state.panner);
-    state.source.start();
-}
-
-window.addEventListener('mousemove', (e) => {
-    state.mouseX = e.clientX;
-    state.mouseY = e.clientY;
-});
-
-function gameLoop() {
-    if (state.isPlaying) {
-        // 水平转动
-        let offsetX = (state.mouseX / window.innerWidth - 0.5) * 2;
-        if (Math.abs(offsetX) < CONFIG.DEADZONE) offsetX = 0;
-        state.heading += offsetX * CONFIG.SENSITIVITY_X;
-
-        // 垂直转动 (抬头低头)
-        let offsetY = (state.mouseY / window.innerHeight - 0.5) * 2;
-        state.pitch = -offsetY * CONFIG.VERTICAL_LIMIT;
-
-        // 更新背景：水平无限循环，垂直上下位移
-        state.bgOffset.x -= offsetX * CONFIG.SENSITIVITY_X * 1800;
-        state.bgOffset.y = 50 + (state.pitch * 20); // 视角抬高，背景下移
-        bgLayer.style.backgroundPosition = `${state.bgOffset.x}px ${state.bgOffset.y}%`;
-        
-        updateAudioSpace();
-    }
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    let g = ctx.createRadialGradient(state.mouseX, state.mouseY, 0, state.mouseX, state.mouseY, 200);
-    g.addColorStop(0, "rgba(120,255,120,0.1)");
-    g.addColorStop(1, "transparent");
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    if (state.flash > 0) {
-        ctx.fillStyle = `rgba(255,255,255,${state.flash})`;
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        state.flash -= 0.05;
-    }
-    requestAnimationFrame(gameLoop);
-}
-
-window.addEventListener('mousedown', () => {
-    if (!state.isPlaying) return;
-    
-    // 3D 判定：检查当前声音在 PannerNode 中的位置是否接近正中心 (0,0,负数)
-    // 也就是 x 接近 0, y 接近 0, z 是负数
-    const relAngleH = Math.atan2(Math.sin(Math.atan2(state.cicadaPos.x, state.cicadaPos.z) - state.heading), Math.cos(Math.atan2(state.cicadaPos.x, state.cicadaPos.z) - state.heading));
-    const distXZ = Math.sqrt(state.cicadaPos.x**2 + state.cicadaPos.z**2);
-    const relAngleV = Math.atan2(state.cicadaPos.y, distXZ) - state.pitch;
-
-    if (Math.abs(relAngleH) < 0.25 && Math.abs(relAngleV) < 0.25) {
-        state.score++;
-        state.flash = 0.5;
-        document.getElementById('score').innerText = state.score;
-        if (state.score >= 3) {
-            state.level++; state.score = 0;
-            document.getElementById('lvl').innerText = state.level;
-            document.getElementById('msg').innerText = "森林全维度进化中...";
-        } else {
-            document.getElementById('msg').innerText = "多维捕获成功！";
-        }
-        spawn();
-    } else {
-        document.getElementById('msg').innerText = "它受惊飞向了树顶或草丛！";
-        state.gain.gain.setTargetAtTime(0, state.audio.currentTime, 0.05);
-        setTimeout(spawn, 1000);
-    }
-});
-
-btnStart.addEventListener('click', () => {
-    state.audio.resume();
-    state.isPlaying = true;
-    btnStart.style.display = "none";
-    document.getElementById('stats-panel').style.display = "block";
-    document.getElementById('msg').innerText = "上下左右移动鼠标\n感知蝉鸣的高度";
-    
-    const bgS = state.audio.createBufferSource();
-    bgS.buffer = state.bgBuffer; bgS.loop = true;
-    const g = state.audio.createGain(); g.gain.value = 0.15;
-    bgS.connect(g).connect(state.audio.destination);
-    bgS.start();
-
-    state.panner = state.audio.createPanner();
-    state.panner.panningModel = 'HRTF';
-    state.gain = state.audio.createGain();
-    state.panner.connect(state.gain).connect(state.audio.destination);
-    
-    spawn();
-    gameLoop();
-});
-
-window.addEventListener('resize', () => {
-    canvas.width = window.innerWidth; canvas.height = window.innerHeight;
-});
-window.dispatchEvent(new Event('resize'));
-load();
-</script>
-</body>
-</html>
 
 
