@@ -2,79 +2,72 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <title>暗夜猎手：360°无限深林</title>
+    <title>暗夜猎手：360° 无限沉浸</title>
     <style>
         body { margin: 0; background: #000; color: #6aff6a; font-family: sans-serif; overflow: hidden; height: 100vh; cursor: crosshair; }
         
-        /* 循环背景容器 */
-        #bg-wrapper {
+        /* 核心：无限循环背景 */
+        #bg-layer {
             position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
+            inset: 0;
+            /* 替换为你的高清全景图 forest.jpg */
+            background: url('forest.jpg');
+            background-repeat: repeat-x;
+            background-size: auto 100%;
+            background-position: 0 0;
+            filter: brightness(0.6) contrast(0.9) blur(2px);
             z-index: 1;
-            pointer-events: none;
-        }
-
-        .bg-part {
-            position: absolute;
-            top: 0;
-            width: 200%; /* 图片需要足够宽以覆盖视野 */
-            height: 100%;
-            /* 请替换为你下载的图片 */
-            background: url('forest.jpg') center/cover;
-            filter: brightness(0.65) contrast(0.9) blur(2px);
+            will-change: background-position;
         }
 
         #vignette {
             position: absolute;
             inset: 0;
-            background: radial-gradient(circle at center, transparent 30%, rgba(0,0,0,0.6) 90%);
+            background: radial-gradient(circle at center, transparent 20%, rgba(0,0,0,0.7) 90%);
             z-index: 2;
             pointer-events: none;
         }
 
         #ui { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center; align-items: center; pointer-events: none; z-index: 10; }
-        #msg { font-size: 24px; letter-spacing: 4px; text-shadow: 0 0 15px #000; }
-        #btn-start { pointer-events: auto; cursor: pointer; border: 1px solid #1a4d1a; padding: 15px 30px; background: rgba(0,40,0,0.7); color: #6aff6a; margin-top: 20px; display: none; }
+        #msg { font-size: 22px; letter-spacing: 4px; text-shadow: 0 0 15px #000; text-align: center; }
+        #btn-start { pointer-events: auto; cursor: pointer; border: 1px solid #1a4d1a; padding: 15px 30px; background: rgba(0,40,0,0.8); color: #6aff6a; margin-top: 20px; display: none; }
         .stats { position: absolute; bottom: 30px; font-size: 14px; opacity: 0.6; }
         canvas { display: block; position: absolute; top: 0; left: 0; z-index: 5; }
     </style>
 </head>
 <body>
 
-<div id="bg-wrapper">
-    <div id="bg1" class="bg-part"></div>
-    <div id="bg2" class="bg-part"></div>
-</div>
+<div id="bg-layer"></div>
 <div id="vignette"></div>
 
 <div id="ui">
-    <div id="msg">正在同步时空维度...</div>
-    <div id="btn-start">进入 360° 深林</div>
+    <div id="msg">森林正在折叠时空...</div>
+    <div id="btn-start">开始 360° 狩猎</div>
     <div id="stats-panel" class="stats" style="display:none;">
-        Level: <span id="lvl">1</span> | Caught: <span id="score">0</span> / 3
+        探索深度: <span id="lvl">1</span> | 捕获: <span id="score">0</span> / 3
     </div>
 </div>
 <canvas id="gameCanvas"></canvas>
 
 <script>
+/**
+ * 360度环绕重构逻辑
+ */
 const state = {
     audio: null, panner: null, gain: null, bgBuffer: null, targetBuffer: null,
-    isPlaying: false, level: 1, score: 0, 
-    playerAngle: 0, // 核心：连续的角度值
-    cicadaAngle: 0,
+    isPlaying: false, level: 1, score: 0,
+    heading: 0,        // 玩家当前的绝对朝向 (0 到 2*PI)
+    cicadaAngle: 0,    // 蝉所在的绝对朝向
     mouseX: 0, mouseY: 0, flash: 0, source: null,
-    bgWidth: 0
+    bgOffset: 0        // 背景图的偏移像素
 };
 
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
-const bg1 = document.getElementById('bg1');
-const bg2 = document.getElementById('bg2');
+const bgLayer = document.getElementById('bg-layer');
 const btnStart = document.getElementById('btn-start');
 
+// 1. 加载资源
 async function load() {
     try {
         const AudioContext = window.AudioContext || window.webkitAudioContext;
@@ -85,77 +78,126 @@ async function load() {
         ]);
         state.bgBuffer = await state.audio.decodeAudioData(bgRes);
         state.targetBuffer = await state.audio.decodeAudioData(targetRes);
-        document.getElementById('msg').innerText = "360度感知已就绪";
+        document.getElementById('msg').innerText = "360度感知已就绪\n请转动屏幕寻找声音";
         btnStart.style.display = "block";
     } catch (e) {
-        document.getElementById('msg').innerText = "加载失败";
+        document.getElementById('msg').innerText = "音频加载失败，请检查文件名";
     }
 }
 
-function updateSpace() {
+// 2. 空间声音核心：计算相对方位
+function updateAudioSpace() {
     if (!state.panner) return;
-    // 即使玩家转了 100 圈，我们通过余弦正弦依然能得到正确的 3D 方位
-    const diff = state.cicadaAngle - state.playerAngle;
-    state.panner.positionX.setTargetAtTime(Math.sin(diff) * 5, state.audio.currentTime, 0.05);
-    state.panner.positionZ.setTargetAtTime(-Math.cos(diff) * 5, state.audio.currentTime, 0.05);
+    
+    // 蝉的绝对角度 - 我的绝对朝向 = 它相对于我的角度
+    const relativeAngle = state.cicadaAngle - state.heading;
+    
+    // 转换为 3D 坐标
+    const x = Math.sin(relativeAngle) * 5;
+    const z = -Math.cos(relativeAngle) * 5;
+
+    state.panner.positionX.setTargetAtTime(x, state.audio.currentTime, 0.05);
+    state.panner.positionZ.setTargetAtTime(z, state.audio.currentTime, 0.05);
 }
 
 function spawn() {
-    if (state.source) { state.source.stop(); state.source.disconnect(); }
+    if (state.source) { state.source.stop(); }
     state.source = state.audio.createBufferSource();
     state.source.buffer = state.targetBuffer;
     state.source.loop = true;
-    // 蝉的绝对角度（保持在 0 - 2PI）
+    
+    // 随机分配蝉的位置 (0 到 360度)
     state.cicadaAngle = Math.random() * Math.PI * 2;
+    
     let vol = Math.max(0.05, 0.7 - (state.level * 0.1));
     state.gain.gain.setTargetAtTime(vol, state.audio.currentTime, 0.1);
+    
     state.source.connect(state.panner);
     state.source.start();
-    updateSpace();
+    updateAudioSpace();
 }
 
+// 3. 核心交互：实现类似 VR 的无限旋转
 window.addEventListener('mousemove', (e) => {
     state.mouseX = e.clientX;
     state.mouseY = e.clientY;
     
-    // 核心修改：鼠标位置决定视角增量，而非固定角度
-    // 当鼠标在屏幕右侧，视角向右增加；反之减少
-    const speed = (e.clientX / window.innerWidth - 0.5) * 0.05;
-    state.playerAngle += speed;
-
-    // 背景循环逻辑计算
-    const bgPos = -(state.playerAngle / (Math.PI * 2)) * 100; // 将弧度转为百分比
-    const movePercent = bgPos % 100;
-    
-    // 两张背景图无缝衔接
-    bg1.style.transform = `translateX(${movePercent}%)`;
-    bg2.style.transform = `translateX(${movePercent + (movePercent > 0 ? -100 : 100)}%)`;
-
-    if (state.isPlaying) updateSpace();
+    if (state.isPlaying) {
+        // 旋转速度：鼠标离中心越远，转得越快
+        const centerX = window.innerWidth / 2;
+        const speed = (e.clientX - centerX) * 0.0001; 
+        
+        // 每一帧更新朝向
+        function rotate() {
+            if (!state.isPlaying) return;
+            state.heading += speed;
+            
+            // 同步背景滚动 (像素偏移)
+            // 假设背景图一个周期对应 2*PI 的弧度
+            state.bgOffset -= speed * 1000; 
+            bgLayer.style.backgroundPosition = `${state.bgOffset}px 0`;
+            
+            updateAudioSpace();
+            requestAnimationFrame(rotate);
+        }
+        // 注意：这里我们通过 render 循环处理 rotate，不在此处重复启动
+    }
 });
+
+// 重写的 Render 循环，处理旋转和绘制
+function gameLoop() {
+    if (state.isPlaying) {
+        // 旋转逻辑：鼠标在屏幕右侧则向右转
+        const turnSpeed = (state.mouseX / window.innerWidth - 0.5) * 0.06;
+        state.heading += turnSpeed;
+        
+        // 更新背景位置
+        state.bgOffset -= turnSpeed * 1500; 
+        bgLayer.style.backgroundPosition = `${state.bgOffset}px 0`;
+        
+        updateAudioSpace();
+    }
+
+    // 绘制手电筒光晕
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    let g = ctx.createRadialGradient(state.mouseX, state.mouseY, 0, state.mouseX, state.mouseY, 180);
+    g.addColorStop(0, "rgba(100,255,100,0.12)");
+    g.addColorStop(1, "transparent");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // 抓捕闪光
+    if (state.flash > 0) {
+        ctx.fillStyle = `rgba(255,255,255,${state.flash})`;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        state.flash -= 0.05;
+    }
+
+    requestAnimationFrame(gameLoop);
+}
 
 window.addEventListener('mousedown', () => {
     if (!state.isPlaying) return;
-    const rawDiff = state.cicadaAngle - state.playerAngle;
-    // 使用 Math.atan2 寻找最短转头路径
-    const normalizedDiff = Math.atan2(Math.sin(rawDiff), Math.cos(rawDiff));
+    
+    // 计算最短角度差
+    const diff = Math.atan2(Math.sin(state.cicadaAngle - state.heading), Math.cos(state.cicadaAngle - state.heading));
 
-    if (Math.abs(normalizedDiff) < 0.25) {
+    if (Math.abs(diff) < 0.3) { // 约 17 度判定区
         state.score++;
-        state.flash = 0.5;
+        state.flash = 0.6;
         document.getElementById('score').innerText = state.score;
         if (state.score >= 3) {
             state.level++; state.score = 0;
             document.getElementById('lvl').innerText = state.level;
-            document.getElementById('msg').innerText = "你已迷失在森林深处...";
+            document.getElementById('msg').innerText = "你已深入森林核心...";
         } else {
             document.getElementById('msg').innerText = "捕获成功！";
         }
         spawn();
     } else {
-        document.getElementById('msg').innerText = "它受惊飞走了！";
+        document.getElementById('msg').innerText = "！！它受惊飞向了别处！！";
         state.gain.gain.setTargetAtTime(0, state.audio.currentTime, 0.05);
-        setTimeout(() => spawn(), 1200);
+        setTimeout(spawn, 1200);
     }
 });
 
@@ -164,11 +206,11 @@ btnStart.addEventListener('click', () => {
     state.isPlaying = true;
     btnStart.style.display = "none";
     document.getElementById('stats-panel').style.display = "block";
-    document.getElementById('msg').innerText = "转动身体，寻找声音...";
+    document.getElementById('msg').innerText = "转动视角，当声音在正前方时点击";
 
     const bgS = state.audio.createBufferSource();
     bgS.buffer = state.bgBuffer; bgS.loop = true;
-    const g = state.audio.createGain(); g.gain.value = 0.15;
+    const g = state.audio.createGain(); g.gain.value = 0.2;
     bgS.connect(g).connect(state.audio.destination);
     bgS.start();
 
@@ -178,24 +220,8 @@ btnStart.addEventListener('click', () => {
     state.panner.connect(state.gain).connect(state.audio.destination);
     
     spawn();
-    requestAnimationFrame(render);
+    gameLoop();
 });
-
-function render() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    let g = ctx.createRadialGradient(state.mouseX, state.mouseY, 0, state.mouseX, state.mouseY, 200);
-    g.addColorStop(0, "rgba(150,255,150,0.15)");
-    g.addColorStop(1, "transparent");
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    if (state.flash > 0) {
-        ctx.fillStyle = `rgba(255,255,255,${state.flash})`;
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        state.flash -= 0.05;
-    }
-    requestAnimationFrame(render);
-}
 
 window.addEventListener('resize', () => {
     canvas.width = window.innerWidth; canvas.height = window.innerHeight;
