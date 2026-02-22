@@ -2,96 +2,93 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>暗夜猎手：蝉 - 兼容重构版</title>
+    <title>暗夜猎手：深林沉浸版</title>
     <style>
-        body { margin: 0; background: #000; color: #1a4d1a; font-family: sans-serif; overflow: hidden; height: 100vh; cursor: crosshair; }
+        body { margin: 0; background: #000; color: #6aff6a; font-family: sans-serif; overflow: hidden; height: 100vh; cursor: crosshair; }
+        
+        /* 动态背景层 */
+        #bg-container {
+            position: absolute;
+            top: 0;
+            left: -10%; /* 预留左右移动空间 */
+            width: 120%; 
+            height: 100%;
+            background: url('forest.jpg') center/cover;
+            filter: brightness(0.1) contrast(1.2) blur(1px); /* 极暗处理 */
+            transition: transform 0.1s ease-out;
+            z-index: 1;
+        }
+
+        /* 环境遮罩：中间亮四周暗 */
+        #vignette {
+            position: absolute;
+            inset: 0;
+            background: radial-gradient(circle at center, transparent 10%, rgba(0,0,0,0.95) 70%);
+            z-index: 2;
+            pointer-events: none;
+        }
+
         #ui { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center; align-items: center; pointer-events: none; z-index: 10; }
-        #msg { font-size: 24px; color: #6aff6a; letter-spacing: 4px; text-align: center; text-shadow: 0 0 10px #000; }
-        #btn-start { pointer-events: auto; cursor: pointer; border: 1px solid #1a4d1a; padding: 15px 30px; background: rgba(0,20,0,0.5); color: #6aff6a; margin-top: 20px; display: none; }
-        .stats { position: absolute; bottom: 30px; color: #4a934a; font-size: 14px; text-transform: uppercase; }
-        canvas { display: block; position: absolute; top: 0; left: 0; }
+        #msg { font-size: 24px; letter-spacing: 4px; text-shadow: 0 0 15px #000; }
+        #btn-start { pointer-events: auto; cursor: pointer; border: 1px solid #1a4d1a; padding: 15px 30px; background: rgba(0,40,0,0.7); color: #6aff6a; margin-top: 20px; display: none; }
+        .stats { position: absolute; bottom: 30px; font-size: 14px; opacity: 0.6; }
+        canvas { display: block; position: absolute; top: 0; left: 0; z-index: 5; }
     </style>
 </head>
 <body>
 
+<div id="bg-container"></div>
+<div id="vignette"></div>
+
 <div id="ui">
-    <div id="msg">正在感知森林...</div>
-    <div id="btn-start">踏入森林</div>
+    <div id="msg">正在感知森林波形...</div>
+    <div id="btn-start">踏入深林</div>
     <div id="stats-panel" class="stats" style="display:none;">
-        Level: <span id="lvl">1</span> | Caught: <span id="score">0</span> / 3
+        探索深度: <span id="lvl">1</span> | 捕获: <span id="score">0</span> / 3
     </div>
 </div>
 <canvas id="gameCanvas"></canvas>
 
 <script>
 /**
- * 高度兼容性架构 - 移除所有 eval 和字符串依赖
+ * 视觉沉浸版 - 增加了视差背景和动态反馈
  */
 const state = {
-    audio: null,
-    panner: null,
-    gain: null,
-    bgBuffer: null,
-    targetBuffer: null,
-    isPlaying: false,
-    level: 1,
-    score: 0,
-    playerAngle: 0,
-    cicadaAngle: 0,
-    mouseX: 0,
-    mouseY: 0,
-    flash: 0,
-    source: null
+    audio: null, panner: null, gain: null, bgBuffer: null, targetBuffer: null,
+    isPlaying: false, level: 1, score: 0, playerAngle: 0, cicadaAngle: 0,
+    mouseX: 0, mouseY: 0, flash: 0, source: null
 };
 
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
-const msgEl = document.getElementById('msg');
+const bgContainer = document.getElementById('bg-container');
 const btnStart = document.getElementById('btn-start');
 
-// 1. 资源预加载 (不使用任何 eval)
 async function load() {
     try {
         const AudioContext = window.AudioContext || window.webkitAudioContext;
         state.audio = new AudioContext();
-
-        // 这里需要确保你的文件名在服务器上真实存在
         const [bgRes, targetRes] = await Promise.all([
             fetch('bg.mp3').then(r => r.arrayBuffer()),
             fetch('cicada.mp3').then(r => r.arrayBuffer())
         ]);
-
         state.bgBuffer = await state.audio.decodeAudioData(bgRes);
         state.targetBuffer = await state.audio.decodeAudioData(targetRes);
-
-        msgEl.innerText = "声音已就绪，请佩戴耳机";
+        document.getElementById('msg').innerText = "森林已在耳边复苏";
         btnStart.style.display = "block";
     } catch (e) {
-        msgEl.innerText = "资源加载失败";
-        msgEl.style.color = "#ff4444";
-        console.error("CSP or Path Error:", e);
+        document.getElementById('msg').innerText = "资源加载失败 (请检查 mp3 文件)";
     }
 }
 
-// 2. 核心逻辑
 function spawn() {
-    if (state.source) {
-        state.source.stop();
-        state.source.disconnect();
-    }
-
+    if (state.source) { state.source.stop(); state.source.disconnect(); }
     state.source = state.audio.createBufferSource();
     state.source.buffer = state.targetBuffer;
     state.source.loop = true;
-
-    // 随机一个角度
     state.cicadaAngle = Math.random() * Math.PI * 2;
-    
-    // 设置音量
     let vol = Math.max(0.05, 0.7 - (state.level * 0.1));
     state.gain.gain.setTargetAtTime(vol, state.audio.currentTime, 0.1);
-
     state.source.connect(state.panner);
     state.source.start();
     updateSpace();
@@ -99,34 +96,26 @@ function spawn() {
 
 function updateSpace() {
     if (!state.panner) return;
-    
-    // 计算相对角度
     const diff = state.cicadaAngle - state.playerAngle;
-    const x = Math.sin(diff) * 5;
-    const z = -Math.cos(diff) * 5;
-
-    state.panner.positionX.setTargetAtTime(x, state.audio.currentTime, 0.05);
-    state.panner.positionZ.setTargetAtTime(z, state.audio.currentTime, 0.05);
+    state.panner.positionX.setTargetAtTime(Math.sin(diff) * 5, state.audio.currentTime, 0.05);
+    state.panner.positionZ.setTargetAtTime(-Math.cos(diff) * 5, state.audio.currentTime, 0.05);
 }
 
 function initGame() {
-    if (state.audio.state === 'suspended') state.audio.resume();
-    
+    state.audio.resume();
     state.isPlaying = true;
     btnStart.style.display = "none";
     document.getElementById('stats-panel').style.display = "block";
-    msgEl.innerText = "寻找鸣叫的方位";
+    document.getElementById('msg').innerText = "闭上眼... 或者看那黑暗的深处";
 
-    // 环境背景音
-    const bg = state.audio.createBufferSource();
-    bg.buffer = state.bgBuffer;
-    bg.loop = true;
+    const bgSource = state.audio.createBufferSource();
+    bgSource.buffer = state.bgBuffer;
+    bgSource.loop = true;
     const bgG = state.audio.createGain();
     bgG.gain.value = 0.15;
-    bg.connect(bgG).connect(state.audio.destination);
-    bg.start();
+    bgSource.connect(bgG).connect(state.audio.destination);
+    bgSource.start();
 
-    // 3D 空间节点
     state.panner = state.audio.createPanner();
     state.panner.panningModel = 'HRTF';
     state.gain = state.audio.createGain();
@@ -136,70 +125,66 @@ function initGame() {
     requestAnimationFrame(render);
 }
 
-// 3. 交互与视觉
 window.addEventListener('mousemove', (e) => {
     state.mouseX = e.clientX;
     state.mouseY = e.clientY;
+    
+    // 背景视差移动：鼠标在右，背景稍微往左走
+    const moveX = (e.clientX / window.innerWidth - 0.5) * 50; 
+    bgContainer.style.transform = `translateX(${-moveX}px) scale(1.1)`;
+
     if (state.isPlaying) {
         state.playerAngle = (e.clientX / window.innerWidth - 0.5) * Math.PI * 2;
         updateSpace();
     }
 });
 
-window.addEventListener('mousedown', (e) => {
+window.addEventListener('mousedown', () => {
     if (!state.isPlaying) return;
-    
-    // 判定角度偏差
     const rawDiff = state.cicadaAngle - state.playerAngle;
     const normalizedDiff = Math.atan2(Math.sin(rawDiff), Math.cos(rawDiff));
 
     if (Math.abs(normalizedDiff) < 0.25) {
-        // 成功捕获
         state.score++;
-        state.flash = 0.7;
+        state.flash = 0.5;
         document.getElementById('score').innerText = state.score;
         if (state.score >= 3) {
-            state.level++;
-            state.score = 0;
+            state.level++; state.score = 0;
             document.getElementById('lvl').innerText = state.level;
-            msgEl.innerText = "森林深处：" + state.level + " 层";
+            document.getElementById('msg').innerText = "森林正在吞噬你...";
         } else {
-            msgEl.innerText = "捕获成功！";
+            document.getElementById('msg').innerText = "精准捕获！";
         }
         spawn();
     } else {
-        // 失败惊飞
-        msgEl.innerText = "它受惊飞走了！";
+        document.getElementById('msg').innerText = "它受惊飞走了！";
         state.gain.gain.setTargetAtTime(0, state.audio.currentTime, 0.05);
-        setTimeout(() => spawn(), 1200); // 匿名函数包裹，不含 eval
+        setTimeout(() => spawn(), 1200);
     }
 });
 
 btnStart.addEventListener('click', initGame);
 
 function render() {
-    ctx.fillStyle = "#010401";
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // 手电筒中心光（随鼠标移动）
+    let g = ctx.createRadialGradient(state.mouseX, state.mouseY, 0, state.mouseX, state.mouseY, 150);
+    g.addColorStop(0, "rgba(100,255,100,0.08)");
+    g.addColorStop(1, "transparent");
+    ctx.fillStyle = g;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // 简单萤火虫
-    for(let i=0; i<15; i++) {
-        let x = (Math.sin(Date.now()*0.001 + i)*0.5 + 0.5) * canvas.width;
-        let y = (Math.cos(Date.now()*0.0008 + i)*0.5 + 0.5) * canvas.height;
-        ctx.fillStyle = "rgba(100,255,100,0.3)";
-        ctx.beginPath(); ctx.arc(x, y, 1, 0, Math.PI*2); ctx.fill();
-    }
-
-    // 手电光
-    let g = ctx.createRadialGradient(state.mouseX, state.mouseY, 0, state.mouseX, state.mouseY, 200);
-    g.addColorStop(0, "rgba(40,80,40,0.1)");
-    g.addColorStop(1, "transparent");
-    ctx.fillStyle = g; ctx.fillRect(0, 0, canvas.width, canvas.height);
-
+    // 成功时的闪光效果
     if (state.flash > 0) {
-        ctx.fillStyle = `rgba(150,255,150,${state.flash})`;
+        ctx.fillStyle = `rgba(255,255,255,${state.flash})`;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
-        state.flash -= 0.05;
+        state.flash -= 0.04;
+        bgContainer.style.filter = `brightness(${0.1 + state.flash}) contrast(1.2)`;
+    } else {
+        bgContainer.style.filter = `brightness(0.1) contrast(1.2) blur(1px)`;
     }
+
     requestAnimationFrame(render);
 }
 
@@ -209,7 +194,6 @@ window.addEventListener('resize', () => {
 });
 window.dispatchEvent(new Event('resize'));
 
-// 自动开始加载
 load();
 </script>
 </body>
