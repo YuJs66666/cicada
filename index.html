@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <title>暗夜猎手：手感优化版</title>
+    <title>暗夜猎手：视觉辅助与音色增强版</title>
     <style>
         body { margin: 0; background: #000; color: #6aff6a; font-family: sans-serif; overflow: hidden; height: 100vh; cursor: crosshair; }
         #bg-layer {
@@ -12,16 +12,16 @@
             background-repeat: repeat-x;
             background-size: auto 100%;
             background-position: 0 50%;
-            filter: brightness(0.5) contrast(0.9) blur(1px);
+            filter: brightness(0.4) contrast(0.9) blur(1px);
             z-index: 1;
         }
         #vignette {
             position: absolute; inset: 0;
-            background: radial-gradient(circle at center, transparent 20%, rgba(0,0,0,0.8) 90%);
+            background: radial-gradient(circle at center, transparent 10%, rgba(0,0,0,0.85) 95%);
             z-index: 2; pointer-events: none;
         }
         #ui { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center; align-items: center; pointer-events: none; z-index: 10; }
-        #msg { font-size: 22px; text-shadow: 0 0 15px #000; text-align: center; }
+        #msg { font-size: 20px; text-shadow: 0 0 10px #000; text-align: center; line-height: 1.5; }
         #btn-start { pointer-events: auto; cursor: pointer; border: 1px solid #1a4d1a; padding: 15px 30px; background: rgba(0,40,0,0.8); color: #6aff6a; margin-top: 20px; display: none; }
         canvas { display: block; position: absolute; top: 0; left: 0; z-index: 5; }
     </style>
@@ -32,26 +32,26 @@
 <div id="vignette"></div>
 
 <div id="ui">
-    <div id="msg">正在校准空间听觉...</div>
-    <div id="btn-start">踏入森林</div>
+    <div id="msg">正在初始化多维度追踪系统...</div>
+    <div id="btn-start">开始狩猎</div>
 </div>
 <canvas id="gameCanvas"></canvas>
 
 <script>
 const CONFIG = {
     SENSITIVITY_X: 0.015,
-    VERTICAL_LIMIT: 0.7,
-    DEADZONE: 0.08,
-    CATCH_ACCURACY: 0.5, // 显著扩大判定范围，解决“点不到”的问题
-    LOCK_ON_COLOR: "rgba(255, 100, 100, 0.3)" // 接近目标时的提示色
+    VERTICAL_LIMIT: 0.8,
+    CATCH_ACCURACY: 0.5,
+    GLOW_INTERVAL: 2000, // 2秒闪烁一次
+    HF_BOOST: 3000,      // 高处蝉鸣的高频增益频率
+    LF_CUT: 500          // 低处蝉鸣的低频截止频率
 };
 
 const state = {
     audio: null, bgBuffer: null, targetBuffer: null,
     isPlaying: false, heading: 0, pitch: 0,
     cicadas: [], mouseX: 0, mouseY: 0, flash: 0,
-    bgOffset: { x: 0, y: 50 },
-    isLockOn: false // 是否正对准某只蝉
+    bgOffset: { x: 0, y: 50 }
 };
 
 const canvas = document.getElementById('gameCanvas');
@@ -69,7 +69,7 @@ async function load() {
         ]);
         state.bgBuffer = await state.audio.decodeAudioData(bgRes);
         state.targetBuffer = await state.audio.decodeAudioData(targetRes);
-        document.getElementById('msg').innerText = "空间对焦已完成";
+        document.getElementById('msg').innerText = "提示：留意林间的绿色微光\n声音尖锐在上方，沉闷在下方";
         btnStart.style.display = "block";
     } catch (e) {
         document.getElementById('msg').innerText = "资源加载失败";
@@ -78,43 +78,53 @@ async function load() {
 
 function spawnCicadas() {
     state.cicadas = [];
-    const count = 3; 
-    for(let i=0; i<count; i++) {
+    for(let i=0; i<3; i++) {
         const angle = Math.random() * Math.PI * 2;
-        const dist = 5;
+        const h = (Math.random() - 0.5) * 8; // 高度 -4 到 4
+        
         const c = {
-            pos: { x: Math.sin(angle) * dist, y: (Math.random() - 0.5) * 6, z: Math.cos(angle) * dist },
+            pos: { x: Math.sin(angle) * 5, y: h, z: Math.cos(angle) * 5 },
             source: state.audio.createBufferSource(),
             panner: state.audio.createPanner(),
-            gain: state.audio.createGain()
+            filter: state.audio.createBiquadFilter(), // 用于增强高度辨识的滤波器
+            gain: state.audio.createGain(),
+            glow: 0
         };
+
         c.source.buffer = state.targetBuffer;
         c.source.loop = true;
         c.panner.panningModel = 'HRTF';
-        c.gain.gain.value = 0.4;
-        c.source.connect(c.panner).connect(c.gain).connect(state.audio.destination);
+        
+        // 根据高度设置不同的滤波效果
+        if (h > 1) { // 在上方：高通滤波，让声音清脆
+            c.filter.type = "highpass";
+            c.filter.frequency.value = 1200;
+        } else if (h < -1) { // 在下方：低通滤波，让声音沉闷
+            c.filter.type = "lowpass";
+            c.filter.frequency.value = 2000;
+        } else {
+            c.filter.type = "allpass";
+        }
+
+        c.source.connect(c.filter).connect(c.panner).connect(c.gain).connect(state.audio.destination);
         c.source.start(state.audio.currentTime + Math.random());
         state.cicadas.push(c);
     }
 }
 
-function gameLoop() {
+function gameLoop(time) {
     if (state.isPlaying) {
         let offsetX = (state.mouseX / window.innerWidth - 0.5) * 2;
-        if (Math.abs(offsetX) < CONFIG.DEADZONE) offsetX = 0;
+        if (Math.abs(offsetX) < 0.1) offsetX = 0;
         state.heading += offsetX * CONFIG.SENSITIVITY_X;
-
-        let offsetY = (state.mouseY / window.innerHeight - 0.5) * 2;
-        state.pitch = -offsetY * CONFIG.VERTICAL_LIMIT;
+        state.pitch = -(state.mouseY / window.innerHeight - 0.5) * 2 * CONFIG.VERTICAL_LIMIT;
 
         state.bgOffset.x -= offsetX * CONFIG.SENSITIVITY_X * 2000;
         state.bgOffset.y = 50 + (state.pitch * 30);
         bgLayer.style.backgroundPosition = `${state.bgOffset.x}px ${state.bgOffset.y}%`;
         
-        // 更新声音并检测是否准心对准
-        state.isLockOn = false;
+        // 更新声音空间
         state.cicadas.forEach(c => {
-            // 3D 旋转计算
             const hCos = Math.cos(-state.heading);
             const hSin = Math.sin(-state.heading);
             let rx = c.pos.x * hCos - c.pos.z * hSin;
@@ -128,19 +138,31 @@ function gameLoop() {
             c.panner.positionY.setTargetAtTime(ry, state.audio.currentTime, 0.1);
             c.panner.positionZ.setTargetAtTime(rz, state.audio.currentTime, 0.1);
 
-            // 判定：如果 rz 为负且 rx, ry 接近 0，说明在正前方
-            if (rz < 0 && Math.abs(rx) < 1.5 && Math.abs(ry) < 1.5) {
-                state.isLockOn = true;
+            // 计算闪光：使用正弦波实现固定频率脉冲
+            c.glow = Math.max(0, Math.sin(time / 300)); 
+            
+            // 只有当蝉在视野范围内（rz < 0）才绘制闪光点
+            if (rz < 0) {
+                // 将 3D 坐标映射到 2D 屏幕位置
+                const screenX = (rx / -rz) * window.innerWidth + window.innerWidth/2;
+                const screenY = (ry / -rz) * window.innerHeight + window.innerHeight/2;
+                
+                // 绘制视觉辅助光点
+                ctx.beginPath();
+                const alpha = c.glow * 0.4 * (1 - Math.abs(rx)/5); // 离准心越近越亮
+                ctx.fillStyle = `rgba(100, 255, 100, ${alpha})`;
+                ctx.arc(screenX, screenY, 4 + c.glow * 10, 0, Math.PI * 2);
+                ctx.fill();
             }
         });
     }
 
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // 绘制准心光晕
+    ctx.fillStyle = "rgba(0,0,0,0.1)"; // 留轨效应
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
     
-    // 动态手电筒：对准时颜色变深，给出反馈
-    let g = ctx.createRadialGradient(state.mouseX, state.mouseY, 0, state.mouseX, state.mouseY, 200);
-    const lightColor = state.isLockOn ? "rgba(255,100,100,0.2)" : "rgba(150,255,150,0.12)";
-    g.addColorStop(0, lightColor);
+    let g = ctx.createRadialGradient(state.mouseX, state.mouseY, 0, state.mouseX, state.mouseY, 180);
+    g.addColorStop(0, "rgba(100,255,100,0.08)");
     g.addColorStop(1, "transparent");
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -161,16 +183,16 @@ window.addEventListener('mousedown', () => {
         const angleV = Math.atan2(c.pos.y, Math.sqrt(c.pos.x**2 + c.pos.z**2));
         const dH = Math.atan2(Math.sin(angleH - state.heading), Math.cos(angleH - state.heading));
         const dV = angleV - state.pitch;
-
-        // 使用更宽松的 CATCH_ACCURACY
         if (Math.abs(dH) < CONFIG.CATCH_ACCURACY && Math.abs(dV) < CONFIG.CATCH_ACCURACY) hitIdx = i;
     });
 
     if (hitIdx !== -1) {
         state.cicadas.splice(hitIdx, 1)[0].source.stop();
         state.flash = 0.5;
-        document.getElementById('msg').innerText = state.cicadas.length > 0 ? "抓到了！" : "这片林子安静了";
-        if (state.cicadas.length === 0) setTimeout(spawnCicadas, 2000);
+        if (state.cicadas.length === 0) {
+            document.getElementById('msg').innerText = "这片林子安静了，继续深入...";
+            setTimeout(spawnCicadas, 2000);
+        }
     }
 });
 
@@ -178,13 +200,14 @@ btnStart.addEventListener('click', () => {
     state.audio.resume();
     state.isPlaying = true;
     btnStart.style.display = "none";
+    document.getElementById('msg').innerText = "";
     const bgS = state.audio.createBufferSource();
     bgS.buffer = state.bgBuffer; bgS.loop = true;
-    const g = state.audio.createGain(); g.gain.value = 0.2;
+    const g = state.audio.createGain(); g.gain.value = 0.15;
     bgS.connect(g).connect(state.audio.destination);
     bgS.start();
     spawnCicadas();
-    gameLoop();
+    gameLoop(0);
 });
 
 window.addEventListener('mousemove', (e) => { state.mouseX = e.clientX; state.mouseY = e.clientY; });
@@ -194,5 +217,5 @@ window.onload = load;
 </script>
 </body>
 </html>
-</html>
+
 
